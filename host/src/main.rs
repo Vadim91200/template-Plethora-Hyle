@@ -18,7 +18,7 @@ struct Cli {
     #[command(subcommand)]
     command: Commands,
 
-    #[arg(long, default_value = "http://localhost:4321")]
+    #[arg(long, default_value = "https://rest-api.devnet.hyle.eu")]
     pub host: String,
 
     #[arg(long, default_value = "agent_contract")]
