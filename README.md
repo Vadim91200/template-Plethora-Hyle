@@ -38,7 +38,7 @@ RISC0_DEV_MODE=1 cargo run
 ### Execute the contract & send a tx on-chain
 
 ```sh
-RISC0_DEV_MODE=1 cargo run -- increment
+RISC0_DEV_MODE=1 cargo run -- set-agent-action agentName actionName
 ```
 
 

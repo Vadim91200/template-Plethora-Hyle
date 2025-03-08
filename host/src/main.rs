@@ -1,8 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use client_sdk::helpers::risc0::Risc0Prover;
-use contract::Counter;
-use contract::CounterAction;
+use contract::{AgentContract, AgentAction, AgentActionAttestation};
 use sdk::api::APIRegisterContract;
 use sdk::BlobTransaction;
 use sdk::ProofTransaction;
@@ -22,14 +21,15 @@ struct Cli {
     #[arg(long, default_value = "http://localhost:4321")]
     pub host: String,
 
-    #[arg(long, default_value = "counter")]
+    #[arg(long, default_value = "agent_contract")]
     pub contract_name: String,
 }
 
 #[derive(Subcommand)]
 enum Commands {
     RegisterContract {},
-    Increment {},
+    SetAgentAction { agent: String, action_name: String },
+    MarkExecutionStatus { success: bool },
 }
 
 #[tokio::main]
@@ -49,7 +49,13 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::RegisterContract {} => {
             // Build initial state of contract
-            let initial_state = Counter { value: 0 };
+            let initial_state = AgentContract {
+                attestation: AgentActionAttestation {
+                    agent: String::new(),
+                    action_name: String::new(),
+                    action_successful: false,
+                },
+            };
 
             // Send the transaction to register the contract
             let res = client
@@ -62,19 +68,21 @@ async fn main() -> Result<()> {
                 .await?;
             println!("✅ Register contract tx sent. Tx hash: {}", res);
         }
-        Commands::Increment {} => {
+        Commands::SetAgentAction { agent, action_name } => {
             // Fetch the initial state from the node
-            let mut initial_state: Counter = client
+            let mut initial_state: AgentContract = client
                 .get_contract(&contract_name.clone().into())
                 .await
                 .unwrap()
                 .state
                 .into();
 
-            // ----
+            // Clone the values before assigning them
+            initial_state.attestation.agent = agent.clone();
+            initial_state.attestation.action_name = action_name.clone();
+
             // Build the blob transaction
-            // ----
-            let action = CounterAction::Increment {};
+            let action = AgentAction::SetAgentAction { agent, action_name };
             let blobs = vec![action.as_blob(contract_name)];
             let blob_tx = BlobTransaction::new(identity.clone(), blobs.clone());
 
@@ -82,11 +90,55 @@ async fn main() -> Result<()> {
             let blob_tx_hash = client.send_tx_blob(&blob_tx).await.unwrap();
             println!("✅ Blob tx sent. Tx hash: {}", blob_tx_hash);
 
-            // ----
             // Prove the state transition
-            // ----
+            let inputs = ContractInput {
+                state: initial_state.as_bytes().unwrap(),
+                identity: identity.clone().into(),
+                tx_hash: blob_tx_hash,
+                private_input: vec![],
+                tx_ctx: None,
+                blobs: blobs.clone(),
+                index: sdk::BlobIndex(0),
+            };
 
-            // Build the contract input
+            let (program_outputs, _, _) = initial_state.execute(&inputs).unwrap();
+            println!("🚀 Executed: {}", program_outputs);
+
+            // Generate the zk proof
+            let proof = prover.prove(inputs).await.unwrap();
+
+            // Build the Proof transaction
+            let proof_tx = ProofTransaction {
+                proof,
+                contract_name: contract_name.clone().into(),
+            };
+
+            // Send the proof transaction
+            let proof_tx_hash = client.send_tx_proof(&proof_tx).await.unwrap();
+            println!("✅ Proof tx sent. Tx hash: {}", proof_tx_hash);
+        }
+        Commands::MarkExecutionStatus { success } => {
+            // Fetch the initial state from the node
+            let mut initial_state: AgentContract = client
+                .get_contract(&contract_name.clone().into())
+                .await
+                .unwrap()
+                .state
+                .into();
+
+            // Update the execution status
+            initial_state.attestation.action_successful = success;
+
+            // Build the blob transaction
+            let action = AgentAction::MarkExecutionStatus { success };
+            let blobs = vec![action.as_blob(contract_name)];
+            let blob_tx = BlobTransaction::new(identity.clone(), blobs.clone());
+
+            // Send the blob transaction
+            let blob_tx_hash = client.send_tx_blob(&blob_tx).await.unwrap();
+            println!("✅ Blob tx sent. Tx hash: {}", blob_tx_hash);
+
+            // Prove the state transition
             let inputs = ContractInput {
                 state: initial_state.as_bytes().unwrap(),
                 identity: identity.clone().into(),
